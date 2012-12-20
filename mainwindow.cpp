@@ -74,52 +74,49 @@ struct QtImage : public QWidget
                 }
             }
 
-            QPainter painter(imageout);
-
-            QPen pen(QRgb(0));
-
             QColor color(QRgb(0));
 
-            pen.setWidth(1);
+            auto plot_pixel_raw = [this, &color](int x, int y, int alpha) -> void
+            {
+                if (alpha == 0 || x < 0 || y < 0 || x >= imageout->width() || y >= imageout->height())
+                    return;
 
-            auto plot_pixel = [&painter, &pen, &color](int x, int y, int alpha) -> void
+                if (alpha == 255)
+                {
+                    imageout->setPixel(x, y, color.rgb());
+                }
+                else
+                {
+                    QColor src_pixel( imageout->pixel(x, y) );
+                    const int inv_alpha = 255 - alpha;
+                    int r = ( src_pixel.red() * inv_alpha + color.red() * alpha ) / 255;
+                    int g = ( src_pixel.green() * inv_alpha + color.green() * alpha ) / 255;
+                    int b = ( src_pixel.blue() * inv_alpha + color.blue() * alpha ) / 255;
+                    src_pixel.setRgb(r, g, b);
+                    imageout->setPixel(x, y, src_pixel.rgb());
+                }
+            };
+
+            auto plot_pixel = [plot_pixel_raw](int x, int y, int alpha) -> void
             {
                 int whole_x = x >> 8;
                 int whole_y = y >> 8;
                 int fract_x = x & 255;
                 int fract_y = y & 255;
 
-                color.setAlpha( alpha * (255 - fract_x) * (255 - fract_y) / ( 255 * 255 ) );
-                pen.setColor( color );
-                painter.setPen( pen );
-                painter.drawPoint( whole_x, whole_y );
+                plot_pixel_raw( whole_x, whole_y, alpha * (255 - fract_x) * (255 - fract_y) / ( 255 * 255 ) );
 
                 if (fract_x)
-                {
-                    color.setAlpha( alpha * fract_x * (255 - fract_y) / ( 255 * 255 ) );
-                    pen.setColor( color );
-                    painter.setPen( pen );
-                    painter.drawPoint( whole_x + 1, whole_y );
-                }
+                    plot_pixel_raw( whole_x + 1, whole_y, alpha * fract_x * (255 - fract_y) / ( 255 * 255 ) );
 
                 if (fract_y)
-                {
-                    color.setAlpha( alpha * (255 - fract_x) * fract_y / ( 255 * 255 ) );
-                    pen.setColor( color );
-                    painter.setPen( pen );
-                    painter.drawPoint( whole_x, whole_y + 1 );
-                }
+                    plot_pixel_raw( whole_x, whole_y + 1, alpha * (255 - fract_x) * fract_y / ( 255 * 255 ) );
 
                 if (fract_x && fract_y)
-                {
-                    color.setAlpha( alpha * fract_x * fract_y / ( 255 * 255 ) );
-                    pen.setColor( color );
-                    painter.setPen( pen );
-                    painter.drawPoint( whole_x + 1, whole_y + 1 );
-                }
+                    plot_pixel_raw( whole_x + 1, whole_y + 1, alpha * fract_x * fract_y / ( 255 * 255 ) );
             };
 
-            auto draw_line = [plot_pixel, &pen, &color](int x1, int y1, int x2, int y2, int alpha) -> void
+            auto draw_line = [plot_pixel](int x1, int y1, int x2, int y2, int alpha) -> void
             {
                 int dx = x2 - x1;
                 int dy = y2 - y1;
@@ -130,13 +127,13 @@ struct QtImage : public QWidget
                 int px;
                 int py;
 
-                plot_pixel( x1, y1, alpha );
-
                 if ( dxabs > dyabs )
                 {
                     dyabs = ( dyabs << 8 ) / dxabs;
-                    px = ( x1 + sdx + 255 ) & ~255;
+                    px = ( x1 + sdx ) & ~255;
                     py = y1 + ( ( dyabs * ( px - x1 ) ) >> 8 );
+
+                    plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
 
                     for ( int i = 0; i < dxabs; i += 256 )
                     {
@@ -148,8 +145,10 @@ struct QtImage : public QWidget
                 else if ( dyabs > dxabs )
                 {
                     dxabs = ( dxabs << 8 ) / dyabs;
-                    py = ( y1 + sdy + 255 ) & ~255;
+                    py = ( y1 + sdy ) & ~255;
                     px = x1 + ( ( dxabs * ( py - y1 ) ) >> 8 );
+
+                    plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
 
                     for ( int i = 0; i < dyabs; i += 256 )
                     {
@@ -158,10 +157,12 @@ struct QtImage : public QWidget
                         py += sdy;
                     }
                 }
-                else
+                else if ( dxabs && dyabs )
                 {
-                    px = ( x1 + sdx + 255 ) & ~255;
-                    py = ( y1 + sdy + 255 ) & ~255;
+                    px = ( x1 + sdx ) & ~255;
+                    py = ( y1 + sdy ) & ~255;
+
+                    plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
 
                     for ( int i = 0; i < dxabs; i += 256 )
                     {
@@ -170,8 +171,13 @@ struct QtImage : public QWidget
                         py += sdy;
                     }
                 }
+                else
+                {
+                    px = x1 - 255;
+                    py = y1 - 255;
+                }
 
-                plot_pixel( x2, y2, alpha );
+                plot_pixel( x2, y2, std::min(255, abs( x2 - px ) + abs( y2 - py ) ) * alpha / 255 );
             };
 
             int progress_fixed = progress * (float)width * 256.0f;
@@ -454,54 +460,57 @@ void MainWindow::appRenderWave(int index)
 
     {
         QRect rect(ui->widget->rect());
-        QPainter p(canvas->image);
 
-        p.eraseRect(rect);
-
-        QPen pen(QRgb(0));
+        {
+            QPainter painter(canvas->image);
+            painter.eraseRect(rect);
+        }
 
         QColor color(QRgb(0));
 
-        pen.setWidth(1);
+        QImage * imageout = canvas->image;
 
-        auto plot_pixel = [&p, &pen, &color](int x, int y) -> void
+        auto plot_pixel_raw = [imageout, &color](int x, int y, int alpha) -> void
+        {
+            if (alpha == 0 || x < 0 || y < 0 || x >= imageout->width() || y >= imageout->height())
+                return;
+
+            if (alpha == 255)
+            {
+                imageout->setPixel(x, y, color.rgb());
+            }
+            else
+            {
+                QColor src_pixel( imageout->pixel(x, y) );
+                const int inv_alpha = 255 - alpha;
+                int r = ( src_pixel.red() * inv_alpha + color.red() * alpha ) / 255;
+                int g = ( src_pixel.green() * inv_alpha + color.green() * alpha ) / 255;
+                int b = ( src_pixel.blue() * inv_alpha + color.blue() * alpha ) / 255;
+                src_pixel.setRgb(r, g, b);
+                imageout->setPixel(x, y, src_pixel.rgb());
+            }
+        };
+
+        auto plot_pixel = [plot_pixel_raw](int x, int y, int alpha) -> void
         {
             int whole_x = x >> 8;
             int whole_y = y >> 8;
             int fract_x = x & 255;
             int fract_y = y & 255;
 
-            color.setAlpha( (255 - fract_x) * (255 - fract_y) / 255 );
-            pen.setColor( color );
-            p.setPen( pen );
-            p.drawPoint( whole_x, whole_y );
+            plot_pixel_raw( whole_x, whole_y, alpha * (255 - fract_x) * (255 - fract_y) / ( 255 * 255 ) );
 
             if (fract_x)
-            {
-                color.setAlpha( fract_x * (255 - fract_y) / 255 );
-                pen.setColor( color );
-                p.setPen( pen );
-                p.drawPoint( whole_x + 1, whole_y );
-            }
+                plot_pixel_raw( whole_x + 1, whole_y, alpha * fract_x * (255 - fract_y) / ( 255 * 255 ) );
 
             if (fract_y)
-            {
-                color.setAlpha( (255 - fract_x) * fract_y / 255 );
-                pen.setColor( color );
-                p.setPen( pen );
-                p.drawPoint( whole_x, whole_y + 1 );
-            }
+                plot_pixel_raw( whole_x, whole_y + 1, alpha * (255 - fract_x) * fract_y / ( 255 * 255 ) );
 
             if (fract_x && fract_y)
-            {
-                color.setAlpha( fract_x * fract_y / 255 );
-                pen.setColor( color );
-                p.setPen( pen );
-                p.drawPoint( whole_x + 1, whole_y + 1 );
-            }
+                plot_pixel_raw( whole_x + 1, whole_y + 1, alpha * fract_x * fract_y / ( 255 * 255 ) );
         };
 
-        auto draw_line = [plot_pixel, &pen, &color](int x1, int y1, int x2, int y2) -> void
+        auto draw_line = [plot_pixel](int x1, int y1, int x2, int y2, int alpha) -> void
         {
             int dx = x2 - x1;
             int dy = y2 - y1;
@@ -512,17 +521,17 @@ void MainWindow::appRenderWave(int index)
             int px;
             int py;
 
-            plot_pixel( x1, y1 );
-
             if ( dxabs > dyabs )
             {
                 dyabs = ( dyabs << 8 ) / dxabs;
-                px = ( x1 + sdx + 255 ) & ~255;
+                px = ( x1 + sdx ) & ~255;
                 py = y1 + ( ( dyabs * ( px - x1 ) ) >> 8 );
+
+                plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
 
                 for ( int i = 0; i < dxabs; i += 256 )
                 {
-                    plot_pixel( px, py );
+                    plot_pixel( px, py, alpha );
                     px += sdx;
                     py += dyabs;
                 }
@@ -530,30 +539,39 @@ void MainWindow::appRenderWave(int index)
             else if ( dyabs > dxabs )
             {
                 dxabs = ( dxabs << 8 ) / dyabs;
-                py = ( y1 + sdy + 255 ) & ~255;
+                py = ( y1 + sdy ) & ~255;
                 px = x1 + ( ( dxabs * ( py - y1 ) ) >> 8 );
+
+                plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
 
                 for ( int i = 0; i < dyabs; i += 256 )
                 {
-                    plot_pixel( px, py );
+                    plot_pixel( px, py, alpha );
                     px += dxabs;
+                    py += sdy;
+                }
+            }
+            else if ( dxabs && dyabs )
+            {
+                px = ( x1 + sdx ) & ~255;
+                py = ( y1 + sdy ) & ~255;
+
+                plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
+
+                for ( int i = 0; i < dxabs; i += 256 )
+                {
+                    plot_pixel( px, py, alpha );
+                    px += sdx;
                     py += sdy;
                 }
             }
             else
             {
-                px = ( x1 + sdx + 255 ) & ~255;
-                py = ( y1 + sdy + 255 ) & ~255;
-
-                for ( int i = 0; i < dxabs; i += 256 )
-                {
-                    plot_pixel( px, py );
-                    px += sdx;
-                    py += sdy;
-                }
+                px = x1 - 255;
+                py = y1 - 255;
             }
 
-            plot_pixel( x2, y2 );
+            plot_pixel( x2, y2, std::min(255, abs( x2 - px ) + abs( y2 - py ) ) * alpha / 255 );
         };
 
         float y_scale = (float)rect.height() * 128.0f / (float)channel_count;
@@ -568,7 +586,7 @@ void MainWindow::appRenderWave(int index)
                 int x = x_scale * i;
                 int y1 = ( 1.0f + waveforms[ 1 ][ channel ][ i ] + offset ) * y_scale;
                 int y2 = ( 1.0f + waveforms[ 0 ][ channel ][ i ] + offset ) * y_scale;
-                draw_line( x, y1, x, y2 );
+                draw_line( x, y1, x, y2, 255 );
             }
         };
 
@@ -581,7 +599,7 @@ void MainWindow::appRenderWave(int index)
                 int x = x_scale * i;
                 int y1 = ( 1.0f + waveforms[ 2 ][ 0 ][ i ] + offset ) * y_scale;
                 int y2 = ( 1.0f - waveforms[ 2 ][ 0 ][ i ] + offset ) * y_scale;
-                draw_line( x, y1, x, y2 );
+                draw_line( x, y1, x, y2, 255 );
             }
         };
 
