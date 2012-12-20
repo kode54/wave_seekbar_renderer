@@ -37,6 +37,13 @@ struct QtImage : public QWidget
         delete imageout;
     }
 
+    void setDirty()
+    {
+        last_gray = -1;
+        last_progress_fixed = -1;
+        update();
+    }
+
     void incProgress()
     {
         float progress = this->progress + ( 0.2f / (float)width );
@@ -117,8 +124,8 @@ struct QtImage : public QWidget
                     else
                     {
                         int fixed_width = abs( progress_fixed - last_progress_fixed );
-                        x = ( std::min( last_progress_fixed, progress_fixed ) >> 8 ) - 4;
-                        width = ( ( fixed_width + 255 ) >> 8 ) + 8;
+                        x = ( std::min( last_progress_fixed, progress_fixed ) >> 8 ) - 3;
+                        width = ( ( fixed_width + 255 ) >> 8 ) + 6;
 
                         if ( x < 0 ) x = 0;
                         if ( ( x + width ) > this->width ) width = this->width - x;
@@ -245,12 +252,10 @@ struct QtImage : public QWidget
                 };
 
                 draw_line( progress_fixed, 0, progress_fixed, height * 256, 255 );
-                draw_line( progress_fixed - 256, 0, progress_fixed - 256, height * 256, 192 );
-                draw_line( progress_fixed + 256, 0, progress_fixed + 256, height * 256, 192 );
-                draw_line( progress_fixed - 512, 0, progress_fixed - 512, height * 256, 64 );
-                draw_line( progress_fixed + 512, 0, progress_fixed + 512, height * 256, 64 );
-                draw_line( progress_fixed - 768, 0, progress_fixed - 768, height * 256, 16 );
-                draw_line( progress_fixed + 768, 0, progress_fixed + 768, height * 256, 16 );
+                draw_line( progress_fixed - 256, 0, progress_fixed - 256, height * 256, 128 );
+                draw_line( progress_fixed + 256, 0, progress_fixed + 256, height * 256, 128 );
+                draw_line( progress_fixed - 512, 0, progress_fixed - 512, height * 256, 32 );
+                draw_line( progress_fixed + 512, 0, progress_fixed + 512, height * 256, 32 );
             }
 
             update( dirty_rect );
@@ -689,5 +694,5 @@ void MainWindow::appRenderWave(int index)
         }
     }
 
-    canvas->update();
+    canvas->setDirty();
 }
