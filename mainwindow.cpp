@@ -78,10 +78,10 @@ struct QtImage : public QWidget
 
             auto plot_pixel_raw = [this, &color](int x, int y, int alpha) -> void
             {
-                if (alpha == 0 || x < 0 || y < 0 || x >= imageout->width() || y >= imageout->height())
+                if (alpha <= 0 || x < 0 || y < 0 || x >= imageout->width() || y >= imageout->height())
                     return;
 
-                if (alpha == 255)
+                if (alpha >= 255)
                 {
                     imageout->setPixel(x, y, color.rgb());
                 }
@@ -472,10 +472,10 @@ void MainWindow::appRenderWave(int index)
 
         auto plot_pixel_raw = [imageout, &color](int x, int y, int alpha) -> void
         {
-            if (alpha == 0 || x < 0 || y < 0 || x >= imageout->width() || y >= imageout->height())
+            if (alpha <= 0 || x < 0 || y < 0 || x >= imageout->width() || y >= imageout->height())
                 return;
 
-            if (alpha == 255)
+            if (alpha >= 255)
             {
                 imageout->setPixel(x, y, color.rgb());
             }
