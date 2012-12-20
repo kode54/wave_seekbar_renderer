@@ -6,6 +6,7 @@
 #include <QFileDialog>
 #include <QImage>
 #include <QPainter>
+#include <QPaintEvent>
 #include <QResizeEvent>
 #include <QWidget>
 
@@ -20,17 +21,19 @@ template <typename T> int sgn(T val) {
 struct QtImage : public QWidget
 {
     int width, height;
-    QImage * image, * imageout;
+    QImage * image, * imagegray, * imageout;
     float progress;
+    int last_gray, last_progress_fixed;
 
     QtImage(QWidget * parent)
-        : QWidget(parent), width(0), height(0), image(0), imageout(0), progress(0.0f)
+        : QWidget(parent), width(0), height(0), image(0), imagegray(0), imageout(0), progress(0.0f), last_gray(-1), last_progress_fixed(-1)
     {
     }
 
     ~QtImage()
     {
         delete image;
+        delete imagegray;
         delete imageout;
     }
 
@@ -38,164 +41,232 @@ struct QtImage : public QWidget
     {
         float progress = this->progress + ( 0.2f / (float)width );
         if ( progress >= 1.0f ) progress -= 1.0f;
-        this->progress = progress;
-        update();
+        setProgress( progress );
     }
 
     void mousePressEvent(QMouseEvent * me)
     {
-        progress = (float)me->x() / (float)width;
-        update();
-        me->accept();
+        setProgress( (float)me->x() / (float)width );
     }
 
-    void paintEvent(QPaintEvent *)
+    void setProgress( float progress )
     {
-        if (!imageout) return;
+        this->progress = progress;
+
+        QRect dirty_rect(width, 0, 0, height);
 
         {
             int progress_whole = progress * (float)width;
 
-            for (int y = 0; y < height; y++)
+            if ( progress_whole != last_gray )
             {
-                for (int x = 0; x < progress_whole; x++)
+                int min_x, max_x;
+
+                if ( last_gray == -1 )
                 {
-                    QColor pixel( image->pixel(x, y) );
-                    int h, s, l;
-                    pixel.convertTo( QColor::Hsl );
-                    pixel.getHsl( &h, &s, &l );
-                    pixel.setHsl( h, 0, l );
-                    pixel.convertTo( QColor::Rgb );
-                    imageout->setPixel(x, y, pixel.rgb() );
+                    min_x = 0;
+                    max_x = width;
                 }
-                for (int x = progress_whole; x < width; x++)
+                else
                 {
-                    imageout->setPixel(x, y, image->pixel(x, y));
+                    min_x = std::min( last_gray, progress_whole );
+                    max_x = std::max( last_gray, progress_whole );
+                }
+
+                // Adjust dirty rectangle to include redrawn color/gray region
+                if ( min_x < dirty_rect.left() )
+                    dirty_rect.setLeft( min_x );
+                if ( max_x > dirty_rect.right() + 1 )
+                    dirty_rect.setRight( max_x - 1 );
+
+                last_gray = progress_whole;
+
+                for (int y = 0; y < height; y++)
+                {
+                    int x;
+                    for (x = min_x; x < progress_whole; x++)
+                    {
+                        QColor pixel( image->pixel(x, y) );
+                        int h, s, l;
+                        pixel.convertTo( QColor::Hsl );
+                        pixel.getHsl( &h, &s, &l );
+                        pixel.setHsl( h, 0, l );
+                        pixel.convertTo( QColor::Rgb );
+                        imagegray->setPixel(x, y, pixel.rgb() );
+                    }
+                    for (; x < max_x; x++)
+                    {
+                        imagegray->setPixel(x, y, image->pixel(x, y));
+                    }
                 }
             }
 
-            QColor color(QRgb(0));
-
-            auto plot_pixel_raw = [this, &color](int x, int y, int alpha) -> void
-            {
-                if (alpha <= 0 || x < 0 || y < 0 || x >= imageout->width() || y >= imageout->height())
-                    return;
-
-                if (alpha >= 255)
-                {
-                    imageout->setPixel(x, y, color.rgb());
-                }
-                else
-                {
-                    QColor src_pixel( imageout->pixel(x, y) );
-                    const int inv_alpha = 255 - alpha;
-                    int r = ( src_pixel.red() * inv_alpha + color.red() * alpha ) / 255;
-                    int g = ( src_pixel.green() * inv_alpha + color.green() * alpha ) / 255;
-                    int b = ( src_pixel.blue() * inv_alpha + color.blue() * alpha ) / 255;
-                    src_pixel.setRgb(r, g, b);
-                    imageout->setPixel(x, y, src_pixel.rgb());
-                }
-            };
-
-            auto plot_pixel = [plot_pixel_raw](int x, int y, int alpha) -> void
-            {
-                int whole_x = x >> 8;
-                int whole_y = y >> 8;
-                int fract_x = x & 255;
-                int fract_y = y & 255;
-
-                plot_pixel_raw( whole_x, whole_y, alpha * (255 - fract_x) * (255 - fract_y) / ( 255 * 255 ) );
-
-                if (fract_x)
-                    plot_pixel_raw( whole_x + 1, whole_y, alpha * fract_x * (255 - fract_y) / ( 255 * 255 ) );
-
-                if (fract_y)
-                    plot_pixel_raw( whole_x, whole_y + 1, alpha * (255 - fract_x) * fract_y / ( 255 * 255 ) );
-
-                if (fract_x && fract_y)
-                    plot_pixel_raw( whole_x + 1, whole_y + 1, alpha * fract_x * fract_y / ( 255 * 255 ) );
-            };
-
-            auto draw_line = [plot_pixel](int x1, int y1, int x2, int y2, int alpha) -> void
-            {
-                int dx = x2 - x1;
-                int dy = y2 - y1;
-                int dxabs = abs(dx);
-                int dyabs = abs(dy);
-                int sdx = sgn(dx) << 8;
-                int sdy = sgn(dy) << 8;
-                int px;
-                int py;
-
-                if ( dxabs > dyabs )
-                {
-                    dyabs = ( dyabs << 8 ) / dxabs;
-                    px = ( x1 + sdx ) & ~255;
-                    py = y1 + ( ( dyabs * ( px - x1 ) ) >> 8 );
-
-                    plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
-
-                    for ( int i = 0; i < dxabs; i += 256 )
-                    {
-                        plot_pixel( px, py, alpha );
-                        px += sdx;
-                        py += dyabs;
-                    }
-                }
-                else if ( dyabs > dxabs )
-                {
-                    dxabs = ( dxabs << 8 ) / dyabs;
-                    py = ( y1 + sdy ) & ~255;
-                    px = x1 + ( ( dxabs * ( py - y1 ) ) >> 8 );
-
-                    plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
-
-                    for ( int i = 0; i < dyabs; i += 256 )
-                    {
-                        plot_pixel( px, py, alpha );
-                        px += dxabs;
-                        py += sdy;
-                    }
-                }
-                else if ( dxabs && dyabs )
-                {
-                    px = ( x1 + sdx ) & ~255;
-                    py = ( y1 + sdy ) & ~255;
-
-                    plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
-
-                    for ( int i = 0; i < dxabs; i += 256 )
-                    {
-                        plot_pixel( px, py, alpha );
-                        px += sdx;
-                        py += sdy;
-                    }
-                }
-                else
-                {
-                    px = x1 - 255;
-                    py = y1 - 255;
-                }
-
-                plot_pixel( x2, y2, std::min(255, abs( x2 - px ) + abs( y2 - py ) ) * alpha / 255 );
-            };
-
             int progress_fixed = progress * (float)width * 256.0f;
 
-            draw_line( progress_fixed, 0, progress_fixed, height * 256, 255 );
-            draw_line( progress_fixed - 256, 0, progress_fixed - 256, height * 256, 192 );
-            draw_line( progress_fixed + 256, 0, progress_fixed + 256, height * 256, 192 );
-            draw_line( progress_fixed - 512, 0, progress_fixed - 512, height * 256, 64 );
-            draw_line( progress_fixed + 512, 0, progress_fixed + 512, height * 256, 64 );
-            draw_line( progress_fixed - 768, 0, progress_fixed - 768, height * 256, 16 );
-            draw_line( progress_fixed + 768, 0, progress_fixed + 768, height * 256, 16 );
-        }
+            {
+                if ( last_progress_fixed != progress_fixed )
+                {
+                    QPainter painter(imageout);
+                    int x, width;
 
-        {
-            QPainter painter(this);
+                    if ( last_progress_fixed == -1 )
+                    {
+                        x = 0;
+                        width = this->width;
+                    }
+                    else
+                    {
+                        int fixed_width = abs( progress_fixed - last_progress_fixed );
+                        x = ( std::min( last_progress_fixed, progress_fixed ) >> 8 ) - 4;
+                        width = ( ( fixed_width + 255 ) >> 8 ) + 8;
 
-            painter.drawImage(0, 0, *imageout);
+                        if ( x < 0 ) x = 0;
+                        if ( ( x + width ) > this->width ) width = this->width - x;
+                    }
+
+                    // Adjust region to include new cursor and erased old cursor
+                    if ( x < dirty_rect.left() )
+                        dirty_rect.setLeft( x );
+                    if ( x + width > dirty_rect.right() + 1 )
+                        dirty_rect.setRight( x + width - 1 );
+
+                    painter.drawImage( x, 0, *imagegray, x, 0, width, height );
+                }
+            }
+
+            if ( last_progress_fixed != progress_fixed )
+            {
+                last_progress_fixed = progress_fixed;
+
+                QColor color(QRgb(0));
+
+                auto plot_pixel_raw = [this, &color](int x, int y, int alpha) -> void
+                {
+                    if (alpha <= 0 || x < 0 || y < 0 || x >= imageout->width() || y >= imageout->height())
+                        return;
+
+                    if (alpha >= 255)
+                    {
+                        imageout->setPixel(x, y, color.rgb());
+                    }
+                    else
+                    {
+                        QColor src_pixel( imageout->pixel(x, y) );
+                        const int inv_alpha = 255 - alpha;
+                        int r = ( src_pixel.red() * inv_alpha + color.red() * alpha ) / 255;
+                        int g = ( src_pixel.green() * inv_alpha + color.green() * alpha ) / 255;
+                        int b = ( src_pixel.blue() * inv_alpha + color.blue() * alpha ) / 255;
+                        src_pixel.setRgb(r, g, b);
+                        imageout->setPixel(x, y, src_pixel.rgb());
+                    }
+                };
+
+                auto plot_pixel = [plot_pixel_raw](int x, int y, int alpha) -> void
+                {
+                    int whole_x = x >> 8;
+                    int whole_y = y >> 8;
+                    int fract_x = x & 255;
+                    int fract_y = y & 255;
+
+                    plot_pixel_raw( whole_x, whole_y, alpha * (255 - fract_x) * (255 - fract_y) / ( 255 * 255 ) );
+
+                    if (fract_x)
+                        plot_pixel_raw( whole_x + 1, whole_y, alpha * fract_x * (255 - fract_y) / ( 255 * 255 ) );
+
+                    if (fract_y)
+                        plot_pixel_raw( whole_x, whole_y + 1, alpha * (255 - fract_x) * fract_y / ( 255 * 255 ) );
+
+                    if (fract_x && fract_y)
+                        plot_pixel_raw( whole_x + 1, whole_y + 1, alpha * fract_x * fract_y / ( 255 * 255 ) );
+                };
+
+                auto draw_line = [plot_pixel](int x1, int y1, int x2, int y2, int alpha) -> void
+                {
+                    int dx = x2 - x1;
+                    int dy = y2 - y1;
+                    int dxabs = abs(dx);
+                    int dyabs = abs(dy);
+                    int sdx = sgn(dx) << 8;
+                    int sdy = sgn(dy) << 8;
+                    int px;
+                    int py;
+
+                    if ( dxabs > dyabs )
+                    {
+                        dyabs = ( dyabs << 8 ) / dxabs;
+                        px = ( x1 + sdx ) & ~255;
+                        py = y1 + ( ( dyabs * ( px - x1 ) ) >> 8 );
+
+                        plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
+
+                        for ( int i = 0; i < dxabs; i += 256 )
+                        {
+                            plot_pixel( px, py, alpha );
+                            px += sdx;
+                            py += dyabs;
+                        }
+                    }
+                    else if ( dyabs > dxabs )
+                    {
+                        dxabs = ( dxabs << 8 ) / dyabs;
+                        py = ( y1 + sdy ) & ~255;
+                        px = x1 + ( ( dxabs * ( py - y1 ) ) >> 8 );
+
+                        plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
+
+                        for ( int i = 0; i < dyabs; i += 256 )
+                        {
+                            plot_pixel( px, py, alpha );
+                            px += dxabs;
+                            py += sdy;
+                        }
+                    }
+                    else if ( dxabs && dyabs )
+                    {
+                        px = ( x1 + sdx ) & ~255;
+                        py = ( y1 + sdy ) & ~255;
+
+                        plot_pixel( x1, y1, std::min( 255, 255 * 2 - abs( px - x1 ) - abs( py - y1 ) ) * alpha / 255 );
+
+                        for ( int i = 0; i < dxabs; i += 256 )
+                        {
+                            plot_pixel( px, py, alpha );
+                            px += sdx;
+                            py += sdy;
+                        }
+                    }
+                    else
+                    {
+                        px = x1 - 255;
+                        py = y1 - 255;
+                    }
+
+                    plot_pixel( x2, y2, std::min(255, abs( x2 - px ) + abs( y2 - py ) ) * alpha / 255 );
+                };
+
+                draw_line( progress_fixed, 0, progress_fixed, height * 256, 255 );
+                draw_line( progress_fixed - 256, 0, progress_fixed - 256, height * 256, 192 );
+                draw_line( progress_fixed + 256, 0, progress_fixed + 256, height * 256, 192 );
+                draw_line( progress_fixed - 512, 0, progress_fixed - 512, height * 256, 64 );
+                draw_line( progress_fixed + 512, 0, progress_fixed + 512, height * 256, 64 );
+                draw_line( progress_fixed - 768, 0, progress_fixed - 768, height * 256, 16 );
+                draw_line( progress_fixed + 768, 0, progress_fixed + 768, height * 256, 16 );
+            }
+
+            update( dirty_rect );
         }
+    }
+
+
+    void paintEvent(QPaintEvent *pe)
+    {
+        if (!imageout) return;
+
+        const QRect & rect( pe->rect() );
+
+        QPainter painter(this);
+
+        painter.drawImage(rect.left(), rect.top(), *imageout, rect.left(), rect.top(), rect.width(), rect.height());
     }
 
     void resizeEvent(QResizeEvent * re)
@@ -209,11 +280,17 @@ struct QtImage : public QWidget
             delete image;
             image = new QImage(width, height, QImage::Format_RGB32);
 
+            delete imagegray;
+            imagegray = new QImage(width, height, QImage::Format_RGB32);
+
             delete imageout;
             imageout = new QImage(width, height, QImage::Format_RGB32);
 
             QPainter painter(image);
             painter.eraseRect(0, 0, width, height);
+
+            last_gray = -1;
+            last_progress_fixed = -1;
         }
     }
 };
@@ -321,7 +398,7 @@ void MainWindow::appLoadDB()
 
                 timer = new QTimer(this);
                 connect(timer, SIGNAL(timeout()), this, SLOT(onTimer()));
-                timer->start(10);
+                timer->start(33);
             }
         }
     }
