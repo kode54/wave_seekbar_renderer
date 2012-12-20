@@ -291,6 +291,8 @@ struct QtImage : public QWidget
 
             last_gray = -1;
             last_progress_fixed = -1;
+
+            setProgress( progress );
         }
     }
 };
@@ -674,8 +676,8 @@ void MainWindow::appRenderWave(int index)
             for ( int i = 0; i < 2048; i++ )
             {
                 int x = x_scale * i;
-                int y1 = ( 1.0f + waveforms[ 2 ][ 0 ][ i ] + offset ) * y_scale;
-                int y2 = ( 1.0f - waveforms[ 2 ][ 0 ][ i ] + offset ) * y_scale;
+                int y1 = ( 1.0f + waveforms[ 2 ][ channel ][ i ] + offset ) * y_scale;
+                int y2 = ( 1.0f - waveforms[ 2 ][ channel ][ i ] + offset ) * y_scale;
                 draw_line( x, y1, x, y2, 255 );
             }
         };
